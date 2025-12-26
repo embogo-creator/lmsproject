@@ -1,0 +1,126 @@
+'use client'
+
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { supabase } from '../../lib/supabaseClient'
+
+export default function Dashboard() {
+  const router = useRouter()
+  const [loading, setLoading] = useState(true)
+  const [userName, setUserName] = useState('')
+  const [subjects, setSubjects] = useState<any[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const [newTitle, setNewTitle] = useState('')
+  const [newDesc, setNewDesc] = useState('')
+
+  const loadData = async () => {
+    setLoading(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    
+    if (!user) {
+      router.push('/login')
+      return
+    }
+
+    // 1. Fetch Profile
+    const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', user.id).single()
+    if (profile) setUserName(profile.full_name)
+
+    // 2. Fetch Subjects
+    const { data: subjectsData } = await supabase.from('subjects').select('*').order('title')
+    
+    // 3. Fetch Progress for each subject
+    if (subjectsData) {
+      const subjectsWithProgress = await Promise.all(subjectsData.map(async (subject) => {
+        // Count total lessons in this subject
+        const { count: totalLessons } = await supabase
+          .from('lessons')
+          .select('*', { count: 'exact', head: true })
+          .eq('subject_id', subject.id)
+
+        // Count completed lessons for this user in this subject
+        const { data: completedData } = await supabase
+          .from('lesson_progress')
+          .select('lesson_id, lessons!inner(subject_id)')
+          .eq('user_id', user.id)
+          .eq('lessons.subject_id', subject.id)
+
+        const completedCount = completedData?.length || 0
+        const percentage = totalLessons && totalLessons > 0 
+          ? Math.round((completedCount / totalLessons) * 100) 
+          : 0
+
+        return { ...subject, percentage, completedCount, totalLessons }
+      }))
+      
+      setSubjects(subjectsWithProgress)
+    }
+    
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    loadData()
+  }, [])
+
+  // ... (keep your handleAddSubject function here)
+
+  if (loading) return <div className="p-10 text-center text-black">Loading LMS...</div>
+
+  return (
+    <div className="min-h-screen bg-gray-50 text-black">
+      {/* ... (keep your nav bar here) */}
+
+      <main className="max-w-6xl mx-auto p-8">
+        <div className="flex justify-between items-center mb-8">
+          <div>
+            <h2 className="text-3xl font-bold">Hello, {userName.split(' ')[0]}! 👋</h2>
+            <p className="text-gray-600">Track your progress and continue learning.</p>
+          </div>
+          <button onClick={() => setShowForm(!showForm)} className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold">
+            {showForm ? 'Close' : '+ Add Subject'}
+          </button>
+        </div>
+
+        {/* ... (keep your showForm logic here) */}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+          {subjects.map((s) => (
+            <div key={s.id} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col">
+              <div className="flex justify-between items-start mb-4">
+                <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-2xl">📚</div>
+                <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded">
+                  {s.percentage}% Done
+                </span>
+              </div>
+              
+              <h3 className="text-xl font-bold mb-1">{s.title}</h3>
+              <p className="text-gray-500 text-sm mb-4 line-clamp-1">{s.description}</p>
+
+              {/* Progress Bar UI */}
+              <div className="mb-6">
+                <div className="flex justify-between text-xs mb-1 text-gray-400 font-bold">
+                  <span>PROGRESS</span>
+                  <span>{s.completedCount} / {s.totalLessons} Lessons</span>
+                </div>
+                <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden">
+                  <div 
+                    className="bg-green-500 h-full transition-all duration-500" 
+                    style={{ width: `${s.percentage}%` }}
+                  />
+                </div>
+              </div>
+
+              <button 
+                onClick={() => router.push(`/subject/${s.id}`)} 
+                className="mt-auto w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition"
+              >
+                Continue Learning
+              </button>
+            </div>
+          ))}
+        </div>
+      </main>
+    </div>
+  )
+}
