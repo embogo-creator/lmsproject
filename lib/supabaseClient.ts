@@ -1,17 +1,18 @@
 // lib/supabaseClient.ts
 import { createBrowserClient } from '@supabase/ssr'
 
-// These logs will help us see if your keys are working in the terminal
-console.log('ENV URL:', process.env.NEXT_PUBLIC_SUPABASE_URL || 'NOT LOADED')
-console.log('ENV KEY:', process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? 'LOADED' : 'NOT LOADED')
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-// 1. This is the "Factory"
+// This logic prevents the "Failed to fetch" crash by validating keys first
 export const createClient = () => {
-  return createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.error('Supabase keys are missing! Check your .env.local file.')
+    // Return a dummy object or handle gracefully to prevent "Failed to fetch"
+    return null as any 
+  }
+  
+  return createBrowserClient(supabaseUrl, supabaseAnonKey)
 }
 
-// 2. This "builds the car" so the Dashboard can use it immediately
 export const supabase = createClient()

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { supabase } from '../../lib/supabaseClient'
 
 export default function Dashboard() {
@@ -13,6 +14,8 @@ export default function Dashboard() {
   const [subjects, setSubjects] = useState<any[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [gradeFilter, setGradeFilter] = useState('All')
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
+  const [showNotifications, setShowNotifications] = useState(false)
   
   // Sidebar states
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
@@ -30,10 +33,13 @@ export default function Dashboard() {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsProfileOpen(false)
       }
+      if (showNotifications && !(event.target as Element).closest('.notification-dropdown')) {
+        setShowNotifications(false)
+      }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
+  }, [showNotifications])
 
   // Resizing logic for flexible sidebar
   const startResizing = (e: React.MouseEvent) => {
@@ -97,7 +103,168 @@ export default function Dashboard() {
     setLoading(false)
   }
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => { 
+    loadData()
+    loadNotifications()
+    // Refresh notifications every 30 seconds
+    const interval = setInterval(loadNotifications, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const loadPerformanceStats = async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
+    try {
+      // Get user profile
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('grade')
+        .eq('id', user.id)
+        .single()
+
+      if (profileError || !profile?.grade) return
+
+      // Get lessons stats
+      const { data: subjectsData, error: subjectsError } = await supabase
+        .from('subjects')
+        .select('id')
+        .eq('target_grade', profile.grade)
+
+      if (subjectsError) return
+
+      let totalLessons = 0
+      let completedLessons = 0
+
+      if (subjectsData) {
+        for (const subject of subjectsData) {
+          try {
+            const { count: lessonCount, error: lessonError } = await supabase
+              .from('lessons')
+              .select('*', { count: 'exact', head: true })
+              .eq('subject_id', subject.id)
+
+            if (lessonError) continue
+
+            const { data: completedData, error: progressError } = await supabase
+              .from('lesson_progress')
+              .select('lesson_id, lessons!inner(subject_id)')
+              .eq('user_id', user.id)
+              .eq('lessons.subject_id', subject.id)
+
+            if (progressError) continue
+
+            totalLessons += lessonCount || 0
+            completedLessons += completedData?.length || 0
+          } catch (error) {
+            // Skip this subject if there's an error
+            continue
+          }
+        }
+      }
+
+      // Get quiz average (handle if table doesn't exist)
+      let quizAverage = 0
+      try {
+        const { data: quizSubmissions, error: quizError } = await supabase
+          .from('quiz_submissions')
+          .select('score, quizzes!inner(lessons!inner(subjects!inner(target_grade)))')
+          .eq('quizzes.lessons.subjects.target_grade', profile.grade)
+
+        if (!quizError && quizSubmissions) {
+          const quizScores = quizSubmissions.map((qs: any) => qs.score).filter((score: any) => typeof score === 'number')
+          if (quizScores.length > 0) {
+            quizAverage = Math.round(quizScores.reduce((a: number, b: number) => a + b, 0) / quizScores.length)
+          }
+        }
+      } catch (error) {
+        // Table might not exist or query failed - silently continue
+      }
+
+      // Get assignment average (handle if table doesn't exist)
+      let assignmentAverage = 0
+      try {
+        const { data: assignmentsData, error: assignmentsError } = await supabase
+          .from('assignments')
+          .select('id, subjects!inner(target_grade)')
+          .eq('subjects.target_grade', profile.grade)
+
+        if (assignmentsError) {
+          // Table doesn't exist - that's okay
+          throw new Error('Table not found')
+        }
+
+        const assignmentIds = assignmentsData?.map(a => a.id) || []
+        if (assignmentIds.length > 0) {
+          const { data: submissionsData, error: submissionsError } = await supabase
+            .from('submissions')
+            .select('score, assignments!inner(max_score)')
+            .eq('user_id', user.id)
+            .in('assignment_id', assignmentIds)
+            .not('score', 'is', null)
+
+          if (!submissionsError && submissionsData) {
+            const assignmentScores = submissionsData
+              .map((s: any) => ({
+                score: s.score,
+                maxScore: s.assignments?.max_score
+              }))
+              .filter((s: any) => typeof s.score === 'number')
+
+            if (assignmentScores.length > 0) {
+              assignmentAverage = Math.round(
+                assignmentScores.reduce((sum: number, s: any) => {
+                  const percentage = s.maxScore ? (s.score / s.maxScore) * 100 : s.score
+                  return sum + percentage
+                }, 0) / assignmentScores.length
+              )
+            }
+          }
+        }
+      } catch (error) {
+        // Table might not exist - that's okay, assignment average will be 0
+      }
+
+      setPerformanceStats({
+        lessonsCompleted: completedLessons,
+        totalLessons: totalLessons,
+        quizAverage: quizAverage,
+        assignmentAverage: assignmentAverage
+      })
+    } catch (error) {
+      // Silently fail - set default values
+      setPerformanceStats({
+        lessonsCompleted: 0,
+        totalLessons: 0,
+        quizAverage: 0,
+        assignmentAverage: 0
+      })
+    }
+  }
+
+  const loadNotifications = async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
+    try {
+      const { count, error } = await supabase
+        .from('notifications')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('read', false)
+
+      if (error && error.code === '42P01') {
+        // Table doesn't exist - set to 0 and don't show error
+        setUnreadNotifications(0)
+        return
+      }
+
+      setUnreadNotifications(count || 0)
+    } catch (error) {
+      // Silently fail - table might not exist yet
+      setUnreadNotifications(0)
+    }
+  }
 
   const filteredSubjects = subjects.filter(s => {
     const matchesSearch = s.title.toLowerCase().includes(searchQuery.toLowerCase()) || s.description?.toLowerCase().includes(searchQuery.toLowerCase());
@@ -177,15 +344,70 @@ export default function Dashboard() {
         </div>
 
         <nav className="flex-1 px-4 space-y-1.5 overflow-y-auto">
-          <SidebarItem icon="🏠" label="Dashboard" active collapsed={isCollapsed} />
-          <SidebarItem icon="📖" label="My Lessons" collapsed={isCollapsed} />
-          <SidebarItem icon="📤" label="Submissions" collapsed={isCollapsed} />
-          <SidebarItem icon="📅" label="Schedule" collapsed={isCollapsed} />
-          <SidebarItem icon="🔔" label="Notifications" collapsed={isCollapsed} />
+          <SidebarItem 
+            icon="🏠" 
+            label="Dashboard" 
+            active 
+            collapsed={isCollapsed}
+            onClick={() => router.push('/dashboard')}
+          />
+          <SidebarItem 
+            icon="📖" 
+            label="My Lessons" 
+            collapsed={isCollapsed}
+            onClick={() => router.push('/dashboard/lessons')}
+          />
+          {role === 'student' && (
+            <SidebarItem 
+              icon="📊" 
+              label="Performance" 
+              collapsed={isCollapsed}
+              onClick={() => router.push('/dashboard/performance')}
+            />
+          )}
+          {role === 'admin' && (
+            <>
+              <SidebarItem 
+                icon="📝" 
+                label="Create Quiz" 
+                collapsed={isCollapsed}
+                onClick={() => router.push('/admin/quiz')}
+              />
+              <SidebarItem 
+                icon="📋" 
+                label="Manage Assignments" 
+                collapsed={isCollapsed}
+                onClick={() => router.push('/admin/assignments')}
+              />
+            </>
+          )}
+          <SidebarItem 
+            icon="📤" 
+            label="Assignments" 
+            collapsed={isCollapsed}
+            onClick={() => router.push('/assignments')}
+          />
+          <SidebarItem 
+            icon="📅" 
+            label="Schedule" 
+            collapsed={isCollapsed}
+            onClick={() => router.push('/dashboard/schedule')}
+          />
+          <SidebarItem 
+            icon="🔔" 
+            label="Notifications" 
+            collapsed={isCollapsed}
+            onClick={() => router.push('/dashboard/notifications')}
+          />
         </nav>
 
         <div className="p-6 border-t border-gray-50 mt-auto shrink-0">
-          <SidebarItem icon="⚙️" label="Settings" collapsed={isCollapsed} />
+          <SidebarItem 
+            icon="⚙️" 
+            label="Settings" 
+            collapsed={isCollapsed}
+            onClick={() => router.push('/dashboard/settings')}
+          />
         </div>
       </aside>
 
@@ -209,21 +431,61 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Profile Section with Dropdown */}
-          <div className="flex items-center gap-4 relative" ref={dropdownRef}>
-            <div className="text-right hidden sm:block">
-              <p className="text-sm font-black text-gray-900 leading-tight">{userName}</p>
-              <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest">
-                {role === 'admin' ? '🛡️ Administrator' : `🎓 ${userGrade}`}
-              </p>
+          {/* Notifications & Profile Section */}
+          <div className="flex items-center gap-4">
+            {/* Notifications Bell */}
+            <div className="relative">
+              <button
+                onClick={() => {
+                  setShowNotifications(!showNotifications)
+                  setIsProfileOpen(false)
+                }}
+                className="relative p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <span className="text-2xl">🔔</span>
+                {unreadNotifications > 0 && (
+                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs font-bold rounded-full flex items-center justify-center">
+                    {unreadNotifications > 9 ? '9+' : unreadNotifications}
+                  </span>
+                )}
+              </button>
+
+              {/* Notifications Dropdown */}
+              {showNotifications && (
+                <div className="absolute right-0 top-12 w-80 bg-white rounded-2xl shadow-xl border border-gray-100 z-50 max-h-96 overflow-hidden flex flex-col">
+                  <div className="p-4 border-b border-gray-100 flex justify-between items-center">
+                    <h3 className="font-bold text-gray-900">Notifications</h3>
+                    <Link
+                      href="/dashboard/notifications"
+                      onClick={() => setShowNotifications(false)}
+                      className="text-sm text-indigo-600 hover:underline font-medium"
+                    >
+                      View All
+                    </Link>
+                  </div>
+                  <NotificationDropdown onClose={() => setShowNotifications(false)} />
+                </div>
+              )}
             </div>
-            
-            <button 
-              onClick={() => setIsProfileOpen(!isProfileOpen)}
-              className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center font-bold text-indigo-700 border-2 border-white shadow-sm shrink-0 hover:ring-2 hover:ring-indigo-300 transition-all active:scale-95"
-            >
-              {userName.charAt(0)}
-            </button>
+
+            {/* Profile Section with Dropdown */}
+            <div className="flex items-center gap-4 relative" ref={dropdownRef}>
+              <div className="text-right hidden sm:block">
+                <p className="text-sm font-black text-gray-900 leading-tight">{userName}</p>
+                <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest">
+                  {role === 'admin' ? '🛡️ Administrator' : `🎓 ${userGrade}`}
+                </p>
+              </div>
+              
+              <button 
+                onClick={() => {
+                  setIsProfileOpen(!isProfileOpen)
+                  setShowNotifications(false)
+                }}
+                className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center font-bold text-indigo-700 border-2 border-white shadow-sm shrink-0 hover:ring-2 hover:ring-indigo-300 transition-all active:scale-95"
+              >
+                {userName.charAt(0)}
+              </button>
 
             {/* Login/Profile Dropdown */}
             {isProfileOpen && (
@@ -232,10 +494,22 @@ export default function Dashboard() {
                     <p className="text-xs font-bold text-gray-900">{userName}</p>
                     <p className="text-[9px] text-indigo-500 font-bold uppercase">{userGrade}</p>
                 </div>
-                <button className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+                <button 
+                  onClick={() => {
+                    setIsProfileOpen(false)
+                    router.push('/dashboard/settings')
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors"
+                >
                   👤 Profile Settings
                 </button>
-                <button className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors">
+                <button 
+                  onClick={() => {
+                    setIsProfileOpen(false)
+                    router.push('/dashboard/performance')
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-colors"
+                >
                   📊 Performance
                 </button>
                 <hr className="my-1 border-gray-50" />
@@ -247,6 +521,7 @@ export default function Dashboard() {
                 </button>
               </div>
             )}
+            </div>
           </div>
         </nav>
 
@@ -352,10 +627,11 @@ export default function Dashboard() {
   )
 }
 
-function SidebarItem({ icon, label, active = false, collapsed = false }: { icon: string, label: string, active?: boolean, collapsed?: boolean }) {
+function SidebarItem({ icon, label, active = false, collapsed = false, onClick }: { icon: string, label: string, active?: boolean, collapsed?: boolean, onClick?: () => void }) {
   return (
     <div 
       title={collapsed ? label : ''} 
+      onClick={onClick}
       className={`
         flex items-center gap-3 px-4 py-3.5 rounded-2xl cursor-pointer transition-all group overflow-hidden
         ${active ? 'bg-indigo-50 text-indigo-700 shadow-sm' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}

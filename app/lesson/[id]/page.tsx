@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '../../../lib/supabaseClient'
 import Link from 'next/link'
+// 1. Import the QuizPlayer component
+import QuizPlayer from '@/components/QuizPlayer' 
 
 export default function LessonPage() {
   const { id } = useParams()
@@ -11,7 +13,7 @@ export default function LessonPage() {
   
   const [lesson, setLesson] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [isSaving, setIsSaving] = useState(false) // New: prevents double-clicks
+  const [isSaving, setIsSaving] = useState(false)
 
   useEffect(() => {
     const fetchLesson = async () => {
@@ -42,7 +44,7 @@ export default function LessonPage() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user || !lesson || isSaving) return
 
-    setIsSaving(true) // Disable button while saving
+    setIsSaving(true)
 
     const { error } = await supabase
       .from('lesson_progress')
@@ -55,7 +57,6 @@ export default function LessonPage() {
       alert("Error saving progress. Please check your connection.")
       setIsSaving(false)
     } else {
-      // Small delay for better "feel" before redirecting
       router.push(`/subject/${lesson.subject_id}`)
     }
   }
@@ -89,9 +90,15 @@ export default function LessonPage() {
           {lesson.content}
         </article>
 
+        {/* 2. Added Quiz Section here */}
+        <section className="mb-16 border-t pt-12">
+          <h3 className="text-2xl font-bold mb-6 text-center">Test Your Knowledge</h3>
+          <QuizPlayer lessonId={id as string} />
+        </section>
+
         <footer className="pt-8 border-t flex flex-col items-center gap-6">
           <div className="text-center">
-            <p className="text-gray-600 font-medium">Have you finished the reading?</p>
+            <p className="text-gray-600 font-medium">Have you finished the reading and the quiz?</p>
             <p className="text-xs text-gray-400">Your progress will be saved automatically.</p>
           </div>
           
